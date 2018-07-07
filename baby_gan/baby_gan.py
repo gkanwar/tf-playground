@@ -6,6 +6,11 @@
 import argparse
 import numpy as np
 import tensorflow as tf
+import os
+import matplotlib
+_headless = os.getenv('DISPLAY', '') == ''
+if _headless: matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # "Real" distribution to compare against
 class DataDist(object):
@@ -120,17 +125,30 @@ def main(args):
 
         print "Done!"
         n_test_batches = 100
-        hreal,_ = np.histogram(data.sample(batch_size*n_test_batches), bins=50, range=(-10.0, 10.0))
+        hreal,bins_real = np.histogram(
+            data.sample(batch_size*n_test_batches), bins=50, range=(-10.0, 10.0))
         z_train = gen.sample(batch_size*n_test_batches)
         data = np.zeros((batch_size*n_test_batches, 1))
         for i in xrange(n_test_batches):
             z_batch = z_train[i*batch_size : (i+1)*batch_size]
             z_batch = np.reshape(z_batch, (batch_size, 1))
             data[i*batch_size : (i+1)*batch_size] = session.run(net.G, {net.z: z_batch})
-        hfake,_ = np.histogram(data, bins=50, range=(-10.0, 10.0))
+        hfake,bins_fake = np.histogram(
+            data, bins=50, range=(-10.0, 10.0))
         print hreal
         print hfake
         print hreal - hfake
+        # Also plot?
+        if not _headless:
+            fig, axes = plt.subplots(2)
+            width = np.diff(bins_real)
+            center = (bins_real[:-1] + bins_real[1:]) / 2.0
+            axes[0].bar(center, hreal, align='center', width=width)
+            width = np.diff(bins_fake)
+            center = (bins_fake[:-1] + bins_fake[1:]) / 2.0
+            axes[1].bar(center, hfake, align='center', width=width)
+            fig.savefig('./baby_gan.png')
+            plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Baby GAN test')
