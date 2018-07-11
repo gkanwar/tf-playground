@@ -12,6 +12,10 @@ _headless = os.getenv('DISPLAY', '') == ''
 if _headless: matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+import sys
+sys.path.append('../lib/')
+from tf_lib import *
+
 # "Real" distribution to compare against
 class DataDist(object):
     def __init__(self):
@@ -34,19 +38,6 @@ class GeneratorDist(object):
             np.linspace(-self.width, self.width, N)
             + np.random.random(N) * self.scale
         ).astype(np.float32)
-
-# Simple linear layer
-def linear(inp, output_dim, scope, init_stddev=1.0):
-    with tf.variable_scope(scope):
-        W = tf.get_variable(
-            'W',
-            [inp.get_shape()[1], output_dim],
-            initializer=tf.random_normal_initializer(stddev=init_stddev))
-        b = tf.get_variable(
-            'b',
-            [output_dim],
-            initializer=tf.constant_initializer(0.0))
-        return tf.matmul(inp, W) + b
 
 # linear -> softplus (basically smooth ReLU) -> linear
 def generator(inp, hidden_size):
