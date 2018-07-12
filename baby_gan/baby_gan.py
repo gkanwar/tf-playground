@@ -115,6 +115,7 @@ def main(args):
                 print i, "\t", ld, "\t", lg
 
         print "Done!"
+        # Evaluate result
         n_test_batches = 100
         hreal,bins_real = np.histogram(
             data.sample(batch_size*n_test_batches), bins=50, range=(-10.0, 10.0))
