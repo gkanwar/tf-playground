@@ -33,7 +33,16 @@ class DataDist(object):
         return self.norm * tf.exp(-(tf_out - self.mu)**2 / (2*self.sigma**2))
 
 # Random gaussian noise distribution for generator.
-class NoiseDist(object):
+class NoiseDist:
+    types = ('gaussian', 'uniform')
+    @staticmethod
+    def get_cls(type):
+        if type == 'gaussian':
+            return GaussNoiseDist
+        elif type == 'uniform':
+            return UniformNoiseDist
+
+class GaussNoiseDist(NoiseDist):
     def __init__(self, sigma):
         self.mu = 0.0
         self.sigma = sigma
@@ -42,6 +51,17 @@ class NoiseDist(object):
     def sample(self, N):
         samples = np.random.normal(self.mu, self.sigma, N).astype(np.float32)
         pdens = self.norm * np.exp(-np.square(samples) / (2*self.sigma**2)).astype(np.float32)
+        return (samples, pdens)
+
+class UniformNoiseDist(NoiseDist):
+    def __init__(self, sigma):
+        self.min = -sigma
+        self.max = sigma
+        self.norm = 1 / (2*sigma)
+
+    def sample(self, N):
+        samples = np.random.uniform(self.min, self.max, N).astype(np.float32)
+        pdens = np.full(N, self.norm).astype(np.float32)
         return (samples, pdens)
 
 # Generator is a simple
@@ -55,19 +75,25 @@ class Generator(object):
         # Make forward pass
         with tf.variable_scope('forward'):
             self.g0 = linear(inp, inp.get_shape()[1], 'g0')
-            self.h0 = isinh(self.g0, 'h0')
-            with tf.variable_scope('h0', reuse=True):
-                self.h0_b = tf.get_variable('b')
-            self.out = self.h0
+            self.g1 = isinh(self.g0, 'g1')
+            # with tf.variable_scope('h0', reuse=True):
+            #     self.h0_b = tf.get_variable('b')
+            self.g2 = linear(self.g1, self.g1.get_shape()[1], 'g2')
+            self.out = self.g2
             with tf.variable_scope('g0', reuse=True):
                 self.g0_W = tf.get_variable('W')
                 self.g0_b = tf.get_variable('b')
+            with tf.variable_scope('g2', reuse=True):
+                self.g2_W = tf.get_variable('W')
+                self.g2_b = tf.get_variable('b')
         # Make detJ pass
         with tf.variable_scope('detJ'):
-            self.d_h0 = d_isinh(self.g0)
             self.d_g0 = self.g0_W
-            self.detJ = tf.abs(tf.reduce_prod(self.d_h0) *
-                               tf.matrix_determinant(self.d_g0))
+            self.d_g1 = d_isinh(self.g0)
+            self.d_g2 = self.g2_W
+            self.detJ = tf.abs(tf.reduce_prod(self.d_g1) *
+                               tf.matrix_determinant(self.d_g0) *
+                               tf.matrix_determinant(self.d_g2))
 
 # Adam optimizer
 def make_optimizer(loss, var_list, learn_rate):
@@ -85,7 +111,8 @@ class Network(object):
         with tf.variable_scope('L'):
             self.p_out = data_dist.make_p(self.G.out)
             # Loss fn is squared diff of logs
-            self.loss_g = tf.reduce_mean((tf.log(self.p_out) + tf.log(self.G.detJ) - tf.log(self.p_eta))**2)
+            self.loss_g = tf.reduce_mean(
+                (tf.log(self.p_out) + tf.log(self.G.detJ) - tf.log(self.p_eta))**2)
         vs = tf.trainable_variables()
         self.opt_g = make_optimizer(self.loss_g, vs, learn_rate)
 
@@ -93,7 +120,8 @@ def main(args):
     batch_size = args.batch_size
     data = DataDist()
     net = Network(data, batch_size, args.learn_rate)
-    noise = NoiseDist(args.input_noise_sigma)
+    
+    noise = NoiseDist.get_cls(args.input_noise_type)(args.input_noise_width)
     with tf.Session() as session:
         tf.local_variables_initializer().run()
         tf.global_variables_initializer().run()
@@ -105,7 +133,7 @@ def main(args):
             })
 
             if i % args.print_freq == 0:
-                print i, "\t", loss, session.run(net.G.g0_b), session.run(net.G.h0_b)
+                print i, "\t", loss, session.run(net.G.g0_b), session.run(net.G.g2_b)
         print "Done!"
         # Evaluate result
         n_test_batches = 100
@@ -144,10 +172,12 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('Learn a distribution using Jacobian method.')
     # Core args
-    parser.add_argument('--num_steps', type=int, default=5000)
+    parser.add_argument('--num_steps', type=int, default=20000)
     parser.add_argument('--learn_rate', type=float, default=0.01)
-    parser.add_argument('-bs', '--batch_size', type=int, default=8)
-    parser.add_argument('--input_noise_sigma', type=float, default=1.0)
+    parser.add_argument('-bs', '--batch_size', type=int, default=16)
+    parser.add_argument('--input_noise_type', type=str,
+                        default=NoiseDist.types[0], choices=NoiseDist.types)
+    parser.add_argument('--input_noise_width', type=float, default=1.0)
     # Candy
     parser.add_argument('--print_freq', type=int, default=10)
     args = parser.parse_args()

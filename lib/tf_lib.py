@@ -16,9 +16,6 @@ def linear(inp, output_dim, scope, init_stddev=1.0):
 # Inverse sinh activation func
 def isinh(z, scope):
     with tf.variable_scope(scope):
-        off = tf.get_variable(
-            'b', [z.get_shape()[1]],
-            initializer=tf.constant_initializer(0.0))
-        return tf.log(z + tf.sqrt(z*z + 1)) + off
+        return tf.log(z + tf.sqrt(z*z + 1))
 def d_isinh(z):
     return tf.pow(tf.square(z*z + 1), -1)
