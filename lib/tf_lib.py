@@ -19,3 +19,10 @@ def isinh(z, scope):
         return tf.log(z + tf.sqrt(z*z + 1))
 def d_isinh(z):
     return tf.pow(tf.square(z*z + 1), -1)
+
+# sinh activation func
+def sinh(z, scope):
+    with tf.variable_scope(scope):
+        return (tf.exp(z) - tf.exp(-z))/2
+def d_sinh(z):
+    return (tf.exp(z) + tf.exp(-z))/2
