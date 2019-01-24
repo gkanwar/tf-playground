@@ -8,6 +8,7 @@ from tf_lib import *
 
 prefix = '/data/d03/platypus/home/gurtej/interpolators/potts_2d/'
 tf_prefix = prefix + 'tf_model/'
+tf_old_prefix = prefix + 'tf_model_old/'
 ensemble_path = 'b{:.2f}_h{:.2f}_n3_N50000_4_32.dat'
 
 all_betas = [0.6, 0.63]
@@ -25,7 +26,10 @@ batch_size = 64
 hidden_size = 16
 embed_size = 16
 learn_rate = 1e-1
-num_epochs = 100000
+learn_decay_rate = 0.9
+learn_decay_steps = 1000
+num_iters = 100000
+adam_eps = 1e-6
 
 def bootstrap_dataset(t, boot_size, labels):
     Ncfg = t.shape[0]
@@ -131,7 +135,11 @@ out = tf.reduce_sum(tf.multiply(out1, out2), axis=1)
 
 loss = tf.reduce_mean(tf.squared_difference(twopts[1], out))
 
-train_op = tf.train.AdamOptimizer(learn_rate).minimize(loss)
+global_step = tf.Variable(0, trainable=False)
+learn_rate_node = tf.train.exponential_decay(
+    learn_rate, global_step, learn_decay_steps, learn_decay_rate, staircase=True)
+opt = tf.train.AdamOptimizer(learning_rate=learn_rate_node, epsilon=adam_eps)
+train_op = opt.minimize(loss, global_step=global_step)
 
 saver = tf.train.Saver()
 
@@ -139,9 +147,10 @@ saver = tf.train.Saver()
 start = time.time()
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
+    # saver.restore(sess, tf_old_prefix + 'tf_model.final')
     sess.run(big_it.initializer, feed_dict=feed_ensembles)
     loss_history = []
-    for i in range(num_epochs):
+    for i in range(num_iters):
         _,l,twopt1,fake_twopt1 = sess.run([train_op, loss, twopts[1], out])
         loss_history.append(l)
         if i % 100 == 0:
