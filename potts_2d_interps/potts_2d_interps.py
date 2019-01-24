@@ -9,72 +9,85 @@ ensemble_path = 'b{:.2f}_h{:.2f}_n3_N50000_4_32.dat'
 
 all_betas = [0.6, 0.63]
 all_hs = [0.05, 0.10, 0.15]
-
-N_ensemble = len(all_betas) * len(all_hs)
+all_params = []
+for beta in all_betas:
+    for h in all_hs:
+        all_params.append((beta,h))
 
 Ncfg_tot = 50000
-Ncfg = 1000
+Ncfg = 100
 Lx = 4
 Lt = 32
-batch_size = 16
+batch_size = 64
+hidden_size = 16
+embed_size = 16
 
 def bootstrap_dataset(t, boot_size, labels):
     Ncfg = t.shape[0]
-    labels = [np.full((Ncfg,), label) for label in labels]
+    labels = [tf.constant(np.full((Ncfg,), label), dtype=tf.float32)
+              for label in labels]
     dataset = tf.data.Dataset.from_tensor_slices(tuple(labels + [t]))
     dataset = dataset.repeat().shuffle(buffer_size=Ncfg).batch(boot_size)
     return dataset
 
-inputs = {}
-real_data = {}
-datasets = []
-for beta in all_betas:
-    for h in all_hs:
-        print((beta,h))
+def bootstrap_multi_ensemble(all_params, shape, boot_size, batch_size):
+    inputs = {}
+    datasets = []
+    for param in all_params:
+        print(param)
         # build bootstrapped pipeline
-        placeholder = tf.placeholder(tf.int32, (Ncfg_tot, Lx, Lt))
-        inputs[(beta,h)] = placeholder
-        dataset = bootstrap_dataset(placeholder, Ncfg, [beta,h])
+        placeholder = tf.placeholder(tf.int32, shape)
+        inputs[tuple(param)] = placeholder
+        dataset = bootstrap_dataset(placeholder, boot_size, list(param))
         datasets.append(dataset)
-        # load data into mem
-        fname = prefix + ensemble_path.format(beta, h)
-        print('Loading {}'.format(fname))
-        data = np.fromfile(fname, dtype=np.float64).astype(np.int)
-        data = data.reshape(Ncfg_tot, Lx, Lt)
-        real_data[(beta,h)] = data
-big_dataset = tf.data.experimental.sample_from_datasets(datasets)
-big_dataset = big_dataset.batch(batch_size)
-big_it = big_dataset.make_initializable_iterator()
-betas, hs, ensembles = big_it.get_next()
+    big_dataset = tf.data.experimental.sample_from_datasets(datasets)
+    big_dataset = big_dataset.batch(batch_size)
+    big_it = big_dataset.make_initializable_iterator()
+    return big_it, inputs
 
+## Establish bootstrap and data feed
+big_it, inputs = bootstrap_multi_ensemble(
+    all_params, (Ncfg_tot, Lx, Lt), Ncfg, batch_size)
+betas, hs, ensembles = big_it.get_next()
+real_data = {}
 feed_ensembles = {}
-for beta in all_betas:
-    for h in all_hs:
-        feed_ensembles[inputs[(beta,h)]] = real_data[(beta,h)]
-        
+for beta,h in all_params:
+    # load data into mem
+    print((beta,h))
+    fname = prefix + ensemble_path.format(beta, h)
+    print('Loading {}'.format(fname))
+    data = np.fromfile(fname, dtype=np.float64).astype(np.int)
+    data = data.reshape(Ncfg_tot, Lx, Lt).astype(np.float32)
+    real_data[(beta,h)] = data
+    feed_ensembles[inputs[(beta,h)]] = real_data[(beta,h)]
+
+## Build evaluation network as noisy ground truth
 op1 = tf.convert_to_tensor([1,0,0,0])
 op2 = tf.convert_to_tensor([2,0,0,0])
 # TODO: Placeholder for ops, and add assert?
-# op1_momproj = []
-# op2_momproj = []
-# for dx in range(Lx):
-#     op1_momproj.append(tf.roll(op1, shift=-dx, axis=0))
-#     op2_momproj.append(tf.roll(op2, shift=-dx, axis=0))
-# op1_momproj = tf.stack(*op1_momproj)
-# op2_momproj = tf.stack(*op2_momproj)
+op1_momproj = []
+op2_momproj = []
+for dx in range(Lx):
+    op1_momproj.append(tf.roll(op1, shift=-dx, axis=0))
+    op2_momproj.append(tf.roll(op2, shift=-dx, axis=0))
+op1_momproj = tf.stack(op1_momproj)
+op2_momproj = tf.stack(op2_momproj)
+print('op1_momproj.shape = {}'.format(op1_momproj.shape))
+print('ensembles.shape = {}'.format(ensembles.shape))
+print('betas.shape = {}'.format(betas.shape))
 
-op1_val = tf.cast(tf.mod(tf.reduce_sum(
-    tf.multiply(ensembles, tf.reshape(op1, shape=[Lx,1])),
-    axis=2 # x-axis
-    ), 3), tf.float32)
-op2_val = tf.cast(tf.mod(tf.reduce_sum(
-    tf.multiply(ensembles, tf.reshape(op2, shape=[Lx,1])),
-    axis=2 # x-axis,
-    ), 3), tf.float32)
+op1_val = tf.cast(tf.mod(
+    tf.tensordot(ensembles, op1_momproj, axes=[[2], [1]])
+    , 3), tf.float32)
+op2_val = tf.cast(tf.mod(
+    tf.tensordot(ensembles, op2_momproj, axes=[[2], [1]])
+    , 3), tf.float32)
 
 # point-like ops
 op1_cos_val = tf.cos(tf.constant(2*math.pi/3)*op1_val)
 op2_cos_val = tf.cos(tf.constant(2*math.pi/3)*op2_val)
+op1_cos_val = tf.reduce_sum(op1_cos_val, axis=3)
+op2_cos_val = tf.reduce_sum(op2_cos_val, axis=3)
 
 # now make twopt
 twopts = []
@@ -85,13 +98,40 @@ for dt in range(Lt):
         / tf.constant(Lt*Ncfg, dtype=tf.float32))
     twopts.append(twopt)
 
-# for each dt and (beta,h) print evaluation of twopt
+# build embedding layers
+op1_embed = tf.tile(op1, [3])[Lx-1:2*Lx+1]
+op1_embed = tf.tile(tf.reshape(op1_embed, [1,Lx+2,1]), [batch_size, 1, 1])
+op1_embed = tf.cast(op1_embed, tf.float32)
+op2_embed = tf.tile(op2, [3])[Lx-1:2*Lx+1]
+op2_embed = tf.tile(tf.reshape(op2_embed, [1,Lx+2,1]), [batch_size, 1, 1])
+op2_embed = tf.cast(op2_embed, tf.float32)
+with tf.variable_scope('embed'):
+    kernel1 = tf.get_variable(
+        'kernel1', shape=[3, 1, hidden_size // 4], dtype=np.float32,
+        initializer=tf.random_normal_initializer())
+    kernel2 = tf.get_variable(
+        'kernel2', shape=[3, hidden_size // 4, hidden_size], dtype=np.float32,
+        initializer=tf.random_normal_initializer())
+op1_conv = tf.nn.conv1d(op1_embed, kernel1, 1, 'VALID')
+op1_conv = tf.nn.conv1d(op1_conv, kernel2, 2, 'VALID')
+op2_conv = tf.nn.conv1d(op2_embed, kernel1, 1, 'VALID')
+op2_conv = tf.nn.conv1d(op2_conv, kernel2, 2, 'VALID')
+betas_embed = tf.slice(betas, [0,0], [batch_size, 1])
+hs_embed = tf.slice(hs, [0,0], [batch_size, 1])
+inp1 = tf.concat([tf.squeeze(op1_conv), betas_embed, hs_embed], 1)
+inp2 = tf.concat([tf.squeeze(op2_conv), betas_embed, hs_embed], 1)
+out1 = linear(inp1, embed_size, 'embed_g0')
+out2 = linear(inp2, embed_size, 'embed_g0') # reuse
+out = tf.reduce_sum(tf.multiply(out1, out2), axis=1)
+
+## Do the thing!
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     sess.run(big_it.initializer, feed_dict=feed_ensembles)
-    out = sess.run(twopts + [betas, hs])
-    print(out[-2][:,0]) # betas
-    print(out[-1][:,0]) # hs
-    for dt,twopt in enumerate(out[:Lt]):
+    big_out = sess.run(twopts + [betas, hs, out])
+    print(big_out[Lt][:,0]) # betas
+    print(big_out[Lt+1][:,0]) # hs
+    print(big_out[Lt+2]) # inner prod outputs
+    for dt,twopt in enumerate(big_out[:Lt]):
         print("dt = {:d}".format(dt))
         print(twopt)

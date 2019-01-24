@@ -4,7 +4,7 @@ import tensorflow as tf
 
 # Simple linear layer
 def linear(inp, output_dim, scope, init_stddev=1.0):
-    with tf.variable_scope(scope):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         W = tf.get_variable(
             'W', [inp.get_shape()[1], output_dim],
             initializer=tf.random_normal_initializer(stddev=init_stddev))
