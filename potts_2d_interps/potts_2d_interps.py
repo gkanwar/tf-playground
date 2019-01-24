@@ -2,9 +2,12 @@ import math
 import numpy as np
 import random
 import tensorflow as tf
+import time
+
 from tf_lib import *
 
 prefix = '/data/d03/platypus/home/gurtej/interpolators/potts_2d/'
+tf_prefix = prefix + 'tf_model/'
 ensemble_path = 'b{:.2f}_h{:.2f}_n3_N50000_4_32.dat'
 
 all_betas = [0.6, 0.63]
@@ -21,6 +24,8 @@ Lt = 32
 batch_size = 64
 hidden_size = 16
 embed_size = 16
+learn_rate = 1e-1
+num_epochs = 100000
 
 def bootstrap_dataset(t, boot_size, labels):
     Ncfg = t.shape[0]
@@ -124,14 +129,37 @@ out1 = linear(inp1, embed_size, 'embed_g0')
 out2 = linear(inp2, embed_size, 'embed_g0') # reuse
 out = tf.reduce_sum(tf.multiply(out1, out2), axis=1)
 
+loss = tf.reduce_mean(tf.squared_difference(twopts[1], out))
+
+train_op = tf.train.AdamOptimizer(learn_rate).minimize(loss)
+
+saver = tf.train.Saver()
+
 ## Do the thing!
+start = time.time()
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     sess.run(big_it.initializer, feed_dict=feed_ensembles)
-    big_out = sess.run(twopts + [betas, hs, out])
-    print(big_out[Lt][:,0]) # betas
-    print(big_out[Lt+1][:,0]) # hs
-    print(big_out[Lt+2]) # inner prod outputs
-    for dt,twopt in enumerate(big_out[:Lt]):
-        print("dt = {:d}".format(dt))
-        print(twopt)
+    loss_history = []
+    for i in range(num_epochs):
+        _,l,twopt1,fake_twopt1 = sess.run([train_op, loss, twopts[1], out])
+        loss_history.append(l)
+        if i % 100 == 0:
+            print('Iter {} ({:.1f}s): loss = {}'.format(i, time.time()-start, l))
+            print(twopt1)
+            print(fake_twopt1)
+        if i % 1000 == 0: # save the model
+            fname = saver.save(sess, tf_prefix + 'tf_model.iter_{:d}'.format(i))
+            print('Saved model in {}'.format(fname))
+        # print(big_out[Lt][:,0]) # betas
+        # print(big_out[Lt+1][:,0]) # hs
+        # print(big_out[Lt+2]) # inner prod outputs
+        # for dt,twopt in enumerate(big_out[:Lt]):
+        #     print("dt = {:d}".format(dt))
+        #     print(twopt)
+    fname = saver.save(sess, tf_prefix + 'tf_model.final')
+    print('Saved final model in {}'.format(fname))
+    print('Training COMPLETED in {:.1f}s'.format(time.time() - start))
+    fname = tf_prefix + 'tf_loss.dat'
+    np.array(loss_history).tofile(fname)
+    print('Wrote loss history to {}'.format(fname))
