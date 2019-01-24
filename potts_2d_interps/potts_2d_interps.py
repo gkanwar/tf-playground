@@ -7,39 +7,51 @@ from tf_lib import *
 prefix = '/data/d03/platypus/home/gurtej/interpolators/potts_2d/'
 ensemble_path = 'b{:.2f}_h{:.2f}_n3_N50000_4_32.dat'
 
-betas = [0.6, 0.63]
-hs = [0.05, 0.10, 0.15]
+all_betas = [0.6, 0.63]
+all_hs = [0.05, 0.10, 0.15]
 
-N_ensemble = len(betas) * len(hs)
+N_ensemble = len(all_betas) * len(all_hs)
 
 Ncfg_tot = 50000
 Ncfg = 1000
 Lx = 4
 Lt = 32
+batch_size = 16
 
-all_data = tf.placeholder(tf.int32, (N_ensemble, Ncfg, Lx, Lt))
-all_labels = []
-real_data = []
-for beta in betas:
-    for h in hs:
+def bootstrap_dataset(t, boot_size, labels):
+    Ncfg = t.shape[0]
+    labels = [np.full((Ncfg,), label) for label in labels]
+    dataset = tf.data.Dataset.from_tensor_slices(tuple(labels + [t]))
+    dataset = dataset.repeat().shuffle(buffer_size=Ncfg).batch(boot_size)
+    return dataset
+
+inputs = {}
+real_data = {}
+datasets = []
+for beta in all_betas:
+    for h in all_hs:
         print((beta,h))
-        # placeholder = tf.placeholder(np.int, (Ncfg, Lx, Lt))
-        all_labels.append((beta, h))
-        # all_data.append(placeholder)
-        # hold truncated real data in memory
+        # build bootstrapped pipeline
+        placeholder = tf.placeholder(tf.int32, (Ncfg_tot, Lx, Lt))
+        inputs[(beta,h)] = placeholder
+        dataset = bootstrap_dataset(placeholder, Ncfg, [beta,h])
+        datasets.append(dataset)
+        # load data into mem
         fname = prefix + ensemble_path.format(beta, h)
         print('Loading {}'.format(fname))
         data = np.fromfile(fname, dtype=np.float64).astype(np.int)
-        data = data.reshape(Ncfg_tot, Lx, Lt)[:Ncfg]
-        real_data.append(data)
-real_data = np.array(real_data)
-all_labels = np.array(all_labels)
-all_labels = tf.convert_to_tensor(all_labels)
-dataset = tf.data.Dataset.from_tensor_slices((all_data, all_labels))
-dataset = dataset.shuffle(buffer_size=N_ensemble).batch(N_ensemble)
-it = dataset.make_initializable_iterator()
-ensembles, labels = it.get_next()
+        data = data.reshape(Ncfg_tot, Lx, Lt)
+        real_data[(beta,h)] = data
+big_dataset = tf.data.experimental.sample_from_datasets(datasets)
+big_dataset = big_dataset.batch(batch_size)
+big_it = big_dataset.make_initializable_iterator()
+betas, hs, ensembles = big_it.get_next()
 
+feed_ensembles = {}
+for beta in all_betas:
+    for h in all_hs:
+        feed_ensembles[inputs[(beta,h)]] = real_data[(beta,h)]
+        
 op1 = tf.convert_to_tensor([1,0,0,0])
 op2 = tf.convert_to_tensor([2,0,0,0])
 # TODO: Placeholder for ops, and add assert?
@@ -76,8 +88,10 @@ for dt in range(Lt):
 # for each dt and (beta,h) print evaluation of twopt
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    sess.run(it.initializer, feed_dict={all_data: real_data})
-    out = sess.run(twopts)
-    for dt,twopt in enumerate(out):
+    sess.run(big_it.initializer, feed_dict=feed_ensembles)
+    out = sess.run(twopts + [betas, hs])
+    print(out[-2][:,0]) # betas
+    print(out[-1][:,0]) # hs
+    for dt,twopt in enumerate(out[:Lt]):
         print("dt = {:d}".format(dt))
         print(twopt)
