@@ -23,8 +23,9 @@ Lx = 4
 Lt = 32
 batch_size = 64
 hidden_size = 16
-embed_size = 16
-learn_rate = 1e-1
+embed_size = 4
+# learn_rate = 1e-1
+learn_rate = 1e-3
 learn_decay_rate = 0.9
 learn_decay_steps = 1000
 num_iters = 100000
@@ -108,7 +109,7 @@ for dt in range(Lt):
     twopts.append(twopt)
 
 # build embedding layers
-def build_embed(op, betas, hs, hidden_size):
+def build_embed(op, betas, hs, hidden_size, embed_size):
     batch_size = op.shape[0]
     Lx = op.shape[1]
     op_embed = tf.tile(op, [1,3])[:,Lx-1:2*Lx+1]
@@ -127,7 +128,9 @@ def build_embed(op, betas, hs, hidden_size):
     op_conv = tf.nn.conv1d(op_conv, kernel2, 2, 'VALID')
     op_conv = tf.nn.relu(op_conv)
     inp = tf.concat([tf.squeeze(op_conv), betas, hs], 1)
-    out = linear(inp, embed_size, 'embed_g0')
+    full_conn = linear(inp, hidden_size, 'embed_g0')
+    full_conn = tf.nn.tanh(full_conn)
+    out = linear(full_conn, embed_size, 'embed_g1')
     return out
 
 betas_embed = tf.slice(betas, [0,0], [batch_size, 1])
@@ -135,8 +138,8 @@ hs_embed = tf.slice(hs, [0,0], [batch_size, 1])
 # TODO: actually sample a stream of ops
 op1_batch = tf.tile(tf.reshape(op1, [1,Lx]), [batch_size, 1])
 op2_batch = tf.tile(tf.reshape(op2, [1,Lx]), [batch_size, 1])
-out1 = build_embed(op1_batch, betas_embed, hs_embed, hidden_size)
-out2 = build_embed(op2_batch, betas_embed, hs_embed, hidden_size)
+out1 = build_embed(op1_batch, betas_embed, hs_embed, hidden_size, embed_size)
+out2 = build_embed(op2_batch, betas_embed, hs_embed, hidden_size, embed_size)
 out = tf.reduce_sum(tf.multiply(out1, out2), axis=1)
 
 # overall loss and training
@@ -144,7 +147,8 @@ loss = tf.reduce_mean(tf.squared_difference(twopts[1], out))
 global_step = tf.Variable(0, trainable=False)
 learn_rate_node = tf.train.exponential_decay(
     learn_rate, global_step, learn_decay_steps, learn_decay_rate, staircase=True)
-opt = tf.train.AdamOptimizer(learning_rate=learn_rate_node, epsilon=adam_eps)
+# opt = tf.train.AdamOptimizer(learning_rate=learn_rate_node, epsilon=adam_eps)
+opt = tf.train.GradientDescentOptimizer(learning_rate=learn_rate_node)
 train_op = opt.minimize(loss, global_step=global_step)
 
 # writing to file
@@ -159,7 +163,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_subpath', type=str, required=True)
     args = parser.parse_args()
     print('Running with args = {}'.format(args))
-    tf_prefix = prefix + args.model_subpath
+    tf_prefix = prefix + args.model_subpath + '/'
     try: os.mkdir(tf_prefix)
     except: pass
     if args.action == 'train':
@@ -207,8 +211,8 @@ if __name__ == "__main__":
         betas_embed = tf.reshape(betas_embed, [batch_size, 1])
         hs_embed = tf.constant(eval_hs, dtype=tf.float32)
         hs_embed = tf.reshape(hs_embed, [batch_size, 1])
-        out1 = build_embed(op1_batch, betas_embed, hs_embed, hidden_size)
-        out2 = build_embed(op2_batch, betas_embed, hs_embed, hidden_size)
+        out1 = build_embed(op1_batch, betas_embed, hs_embed, hidden_size, embed_size)
+        out2 = build_embed(op2_batch, betas_embed, hs_embed, hidden_size, embed_size)
         out = tf.reduce_sum(tf.multiply(out1, out2), axis=1)
         with tf.Session() as sess:
             saver.restore(sess, tf_prefix + 'tf_model.final')
