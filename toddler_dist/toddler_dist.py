@@ -7,6 +7,7 @@ import argparse
 from math import *
 import numpy as np
 import tensorflow as tf
+import operator
 import os
 import matplotlib
 _headless = os.getenv('DISPLAY', '') == ''
@@ -75,17 +76,17 @@ class UniformNoiseDist(NoiseDist):
         return (samples, pdens)
 
 # Generator is a simple
-# [ linear -> sinh -> linear]
+# [ linear -> isinh -> linear]
 # network. Note that the actual function should just be linear in the input
 # distribution, so the network should learn to push the input through the linear
-# regime of the sinh.
+# regime of the isinh.
 class Generator(object):
     def __init__(self, inp):
         self.inp = inp
         # Make forward pass
         with tf.variable_scope('forward'):
             self.g0 = linear(inp, inp.get_shape()[1], 'g0')
-            self.g1 = sinh(self.g0, 'g1')
+            self.g1 = isinh(self.g0, 'g1')
             # with tf.variable_scope('h0', reuse=True):
             #     self.h0_b = tf.get_variable('b')
             self.g2 = linear(self.g1, self.g1.get_shape()[1], 'g2')
@@ -99,12 +100,14 @@ class Generator(object):
         # Make detJ pass
         with tf.variable_scope('detJ'):
             self.d_g0 = self.g0_W
-            self.d_g1 = d_sinh(self.g0)
+            self.d_g1 = d_isinh(self.g0)
             self.d_g2 = self.g2_W
-            # TODO: Unclear if determinint does the right thing when batching!!
-            self.detJ = tf.abs(tf.reduce_prod(self.d_g1) *
-                               tf.matrix_determinant(self.d_g0) *
-                               tf.matrix_determinant(self.d_g2))
+            # TODO: Unclear if determinant does the right thing when batching!!
+            self.detJpieces = [
+                tf.reduce_prod(self.d_g1),
+                tf.matrix_determinant(self.d_g0),
+                tf.matrix_determinant(self.d_g2)]
+            self.detJ = tf.abs(reduce(operator.mul, self.detJpieces))
 
 # Adam optimizer
 def make_optimizer(loss, var_list, learn_rate):
@@ -121,9 +124,17 @@ class Network(object):
             self.G = Generator(self.eta)
         with tf.variable_scope('L'):
             self.p_out = data_dist.make_p(self.G.out)
-            # Loss fn is squared diff of logs
-            self.loss_g = tf.reduce_mean(
-                (tf.log(self.p_out) + tf.log(self.G.detJ) - tf.log(self.p_eta))**2)
+            self.loss_det = self.p_out * self.G.detJ / self.p_eta
+            self.loss_ent = tf.log(self.loss_det)
+            
+            # Loss fn is squared Kullback-Leibler divergence est
+            self.loss_g = tf.reduce_mean(self.loss_det * self.loss_ent)
+            
+            # Loss fn is squared det matching criterion
+            # self.loss_g = self.loss_det
+            
+            # Loss fn is direct cross entropy
+            # self.loss_g = tf.reduce_mean(-tf.log(self.p_out * self.G.detJ))
         vs = tf.trainable_variables()
         self.opt_g = make_optimizer(self.loss_g, vs, learn_rate)
 
@@ -144,7 +155,12 @@ def main(args):
             })
 
             if i % args.print_freq == 0:
-                print i, "\t", loss, detJ, p_out, p_eta_train, g2_b
+                print i, "\t", loss, "\t", g2_b, "\t", detJ, "\t", p_out, "\t", p_eta_train
+                print "\t...", np.linalg.cond(session.run(net.G.g0_W)), \
+                    "\t", np.linalg.cond(session.run(net.G.g2_W))
+                # print "\t...", session.run(tf.matrix_inverse(net.G.g0_W))
+                # print "\t...", session.run(tf.matrix_inverse(net.G.g2_W))
+                
         print "Done!"
         # Evaluate result
         n_test_batches = 1000
@@ -199,7 +215,7 @@ if __name__ == "__main__":
     # Core args
     parser.add_argument('--num_steps', type=int, default=20000)
     parser.add_argument('--learn_rate', type=float, default=0.01)
-    parser.add_argument('-bs', '--batch_size', type=int, default=1)
+    parser.add_argument('-bs', '--batch_size', type=int, default=8)
     parser.add_argument('--input_noise_type', type=str,
                         default=NoiseDist.types[0], choices=NoiseDist.types)
     parser.add_argument('--input_noise_width', type=float, default=1.0)

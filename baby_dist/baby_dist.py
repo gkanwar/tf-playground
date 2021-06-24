@@ -110,9 +110,14 @@ class Network(object):
             self.G = Generator(self.eta)
         with tf.variable_scope('L'):
             self.p_out = data_dist.make_p(self.G.out)
-            # Loss fn is squared diff of logs
-            self.loss_g = tf.reduce_mean(
-                (tf.log(self.p_out) + tf.log(self.G.detJ) - tf.log(self.p_eta))**2)
+            self.loss_det = self.p_out * self.G.detJ / self.p_eta
+            self.loss_ent = tf.log(self.p_out / self.p_eta)
+            # # Loss fn is squared Kullback-Leibler divergence est
+            # self.loss_g = tf.reduce_mean(tf.pow(
+            #     self.loss_det * self.loss_ent, 2))
+            # Loss fn is squared det matching criterion
+            self.loss_g = tf.reduce_mean(tf.pow(
+                tf.log(self.loss_det), 2))
         vs = tf.trainable_variables()
         self.opt_g = make_optimizer(self.loss_g, vs, learn_rate)
 
